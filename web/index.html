@@ -1,0 +1,212 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0f7f77" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Loan Master" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <title>365 Loan Master</title>
+  </head>
+  <body>
+    <div class="ambient-bg" aria-hidden="true"></div>
+
+    <main class="app-shell">
+      <section id="loginView" class="panel login-panel">
+        <h1>365 Loan Master</h1>
+        <p class="muted">Ledger-first loan management</p>
+
+        <form id="loginApiSettingsForm" class="stack">
+          <label for="loginApiUrl">Apps Script Web App URL</label>
+          <input id="loginApiUrl" name="apiUrl" required placeholder="https://script.google.com/.../exec" />
+          <button type="submit">Save API URL</button>
+        </form>
+
+        <form id="initializeForm" class="stack">
+          <label for="initialPin">Initial PIN (first run only)</label>
+          <input id="initialPin" name="initialPin" inputmode="numeric" maxlength="8" minlength="4" pattern="[0-9]{4,8}" placeholder="4-8 digits" />
+          <button type="submit">Initialize System</button>
+        </form>
+
+        <form id="loginForm" class="stack">
+          <label for="pin">PIN</label>
+          <input id="pin" name="pin" required inputmode="numeric" maxlength="8" minlength="4" pattern="[0-9]{4,8}" placeholder="Enter PIN" />
+          <button type="submit">Login</button>
+        </form>
+
+        <p id="loginStatus" class="status-text"></p>
+      </section>
+
+      <section id="appView" class="panel hidden">
+        <header class="topbar">
+          <div>
+            <h2>Loan Master</h2>
+            <p id="syncLabel" class="muted">Checking sync...</p>
+          </div>
+          <button id="syncNowBtn" class="ghost">Sync</button>
+        </header>
+
+        <section id="tab-dashboard" class="tab active">
+          <div class="cards" id="dashboardCards"></div>
+          <div class="card">
+            <h3>Quick Actions</h3>
+            <div class="actions-grid">
+              <button data-open-tab="clients">New Client</button>
+              <button data-open-tab="loans">New Loan</button>
+              <button id="refreshBtn" class="ghost">Refresh Data</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="tab-clients" class="tab">
+          <div class="card">
+            <h3>Add Client</h3>
+            <form id="clientForm" class="stack compact">
+              <input name="name" required placeholder="Client Name" />
+              <input name="phone" placeholder="Phone" />
+              <input name="defaultInterestPct" type="number" step="0.01" placeholder="Interest % (default 35)" />
+              <select name="riskFlag">
+                <option value="LOW">Low Risk</option>
+                <option value="MEDIUM">Medium Risk</option>
+                <option value="HIGH">High Risk</option>
+              </select>
+              <textarea name="notes" placeholder="Notes" rows="2"></textarea>
+              <button type="submit">Save Client</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h3>Clients</h3>
+            <div id="clientsList" class="list"></div>
+          </div>
+        </section>
+
+        <section id="tab-loans" class="tab">
+          <div class="card">
+            <h3>Create Loan</h3>
+            <form id="loanForm" class="stack compact">
+              <select name="clientId" id="loanClientId" required></select>
+              <input name="principal" type="number" required step="0.01" placeholder="Principal (ZAR)" />
+              <input name="interestRatePct" type="number" step="0.01" value="35" placeholder="Interest %" />
+              <label class="inline">
+                <input name="disbursementFeeApplied" type="checkbox" checked />
+                Apply R20 disbursement fee
+              </label>
+              <input name="dateIssued" type="date" />
+              <input name="dueDate" type="date" />
+              <button type="submit">Create Loan</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h3>Loans</h3>
+            <div class="loan-filters">
+              <select id="loanStatusFilter">
+                <option value="ALL">All</option>
+                <option value="ACTIVE">Active</option>
+                <option value="DUE TODAY">Due Today</option>
+                <option value="OVERDUE">Overdue</option>
+                <option value="SETTLED">Settled</option>
+              </select>
+            </div>
+            <div id="loansList" class="list"></div>
+          </div>
+
+          <div class="card">
+            <h3>Loan Detail</h3>
+            <div id="loanDetail" class="muted">Select a loan to view ledger.</div>
+
+            <form id="paymentForm" class="stack compact hidden">
+              <h4>Record Payment</h4>
+              <input name="amount" type="number" step="0.01" required placeholder="Amount (ZAR)" />
+              <input name="date" type="date" />
+              <input name="notes" placeholder="Notes" />
+              <button type="submit">Save Payment</button>
+            </form>
+
+            <form id="waiverForm" class="stack compact hidden">
+              <h4>Waive Interest</h4>
+              <input name="amount" type="number" step="0.01" required placeholder="Waiver (ZAR)" />
+              <input name="date" type="date" />
+              <input name="notes" placeholder="Reason" />
+              <button type="submit">Save Waiver</button>
+            </form>
+
+            <form id="adjustForm" class="stack compact hidden">
+              <h4>Adjustment</h4>
+              <input name="amount" type="number" step="0.01" required placeholder="Signed amount (ZAR)" />
+              <input name="date" type="date" />
+              <input name="notes" placeholder="Reason" />
+              <button type="submit">Save Adjustment</button>
+            </form>
+
+            <form id="extendForm" class="stack compact hidden">
+              <h4>Extend Loan</h4>
+              <select name="mode" required>
+                <option value="penalty">Penalty Extension (20%)</option>
+                <option value="recalc">Recalculate Interest (35%)</option>
+              </select>
+              <input name="ratePct" type="number" step="0.01" placeholder="Rate % (optional)" />
+              <input name="daysToAdd" type="number" placeholder="Days to add (default 30)" />
+              <input name="newDueDate" type="date" />
+              <input name="notes" placeholder="Notes" />
+              <button type="submit">Apply Extension</button>
+            </form>
+          </div>
+        </section>
+
+        <section id="tab-reports" class="tab">
+          <div class="card">
+            <h3>Monthly Report</h3>
+            <form id="reportForm" class="inline-form">
+              <input id="reportMonth" type="month" required />
+              <button type="submit">Load</button>
+              <button type="button" id="exportCsvBtn" class="ghost">Export CSV</button>
+            </form>
+            <div id="reportResult" class="list"></div>
+          </div>
+        </section>
+
+        <section id="tab-settings" class="tab">
+          <div class="card">
+            <h3>Settings</h3>
+            <form id="apiSettingsForm" class="stack compact">
+              <label for="apiUrl">Apps Script Web App URL</label>
+              <input id="apiUrl" name="apiUrl" required placeholder="https://script.google.com/.../exec" />
+              <button type="submit">Save API URL</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <h3>Security</h3>
+            <form id="changePinForm" class="stack compact">
+              <input name="currentPin" inputmode="numeric" required placeholder="Current PIN" />
+              <input name="newPin" inputmode="numeric" required placeholder="New PIN (4-8 digits)" />
+              <button type="submit">Change PIN</button>
+            </form>
+          </div>
+
+          <div class="card">
+            <button id="logoutBtn" class="danger">Logout</button>
+          </div>
+        </section>
+
+        <nav class="bottom-nav">
+          <button data-tab="dashboard" class="active">Dashboard</button>
+          <button data-tab="clients">Clients</button>
+          <button data-tab="loans">Loans</button>
+          <button data-tab="reports">Reports</button>
+          <button data-tab="settings">Settings</button>
+        </nav>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
