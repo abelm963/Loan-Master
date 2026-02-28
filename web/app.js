@@ -10,6 +10,7 @@ const state = {
   dashboard: null,
   report: null,
   selectedLoanId: null,
+  selectedLoanDetail: null,
   syncing: false
 };
 
@@ -23,6 +24,7 @@ const el = {
   clientsList: document.getElementById('clientsList'),
   loansList: document.getElementById('loansList'),
   loanDetail: document.getElementById('loanDetail'),
+  loanSummaryCard: document.getElementById('loanSummaryCard'),
   loanClientId: document.getElementById('loanClientId'),
   loanStatusFilter: document.getElementById('loanStatusFilter'),
   reportResult: document.getElementById('reportResult'),
@@ -31,8 +33,11 @@ const el = {
   apiUrl: document.getElementById('apiUrl'),
   paymentForm: document.getElementById('paymentForm'),
   waiverForm: document.getElementById('waiverForm'),
+  waiverAmount: document.getElementById('waiverAmount'),
   adjustForm: document.getElementById('adjustForm'),
-  extendForm: document.getElementById('extendForm')
+  extendForm: document.getElementById('extendForm'),
+  createLoanPanel: document.getElementById('createLoanPanel'),
+  hideAllPanelsBtn: document.getElementById('hideAllPanelsBtn')
 };
 
 boot_();
@@ -82,6 +87,10 @@ function bindEvents_() {
   document.getElementById('refreshBtn').addEventListener('click', refreshAll_);
   document.getElementById('syncNowBtn').addEventListener('click', syncQueue_);
   document.getElementById('logoutBtn').addEventListener('click', onLogout_);
+  document.querySelectorAll('[data-action-panel]').forEach((btn) => {
+    btn.addEventListener('click', () => onToggleActionPanel_(btn.dataset.actionPanel));
+  });
+  el.hideAllPanelsBtn.addEventListener('click', hideAllActionPanels_);
 
   document.querySelectorAll('.bottom-nav button[data-tab]').forEach((btn) => {
     btn.addEventListener('click', () => setTab_(btn.dataset.tab));
@@ -92,6 +101,7 @@ function bindEvents_() {
   });
 
   el.loanStatusFilter.addEventListener('change', renderLoans_);
+  initDateInputs_();
 
   window.addEventListener('online', async () => {
     await updateSyncLabel_();
@@ -213,7 +223,14 @@ async function onCreateLoan_(event) {
     if (!result.queued) {
       showToast_('Loan created');
       formEl.reset();
+      resetDateInputsIn_(formEl);
       await refreshAll_();
+      const loanId = result.resp && result.resp.data ? result.resp.data.loanId : null;
+      if (loanId) {
+        state.selectedLoanId = loanId;
+        await refreshLoanDetail_(loanId);
+      }
+      hideAllActionPanels_();
     }
   } catch (err) {
     showToast_(err.message);
@@ -257,9 +274,11 @@ async function saveLoanTransaction_(formEl, type) {
     const result = await writeAction_('addTransaction', payload);
     if (!result.queued) {
       formEl.reset();
+      resetDateInputsIn_(formEl);
       await refreshLoanDetail_(state.selectedLoanId);
       await refreshAll_();
       showToast_(type + ' recorded');
+      hideAllActionPanels_();
     }
   } catch (err) {
     showToast_(err.message);
@@ -288,9 +307,11 @@ async function onExtendLoan_(event) {
     const result = await writeAction_('extendLoan', payload);
     if (!result.queued) {
       formEl.reset();
+      resetDateInputsIn_(formEl);
       await refreshLoanDetail_(state.selectedLoanId);
       await refreshAll_();
       showToast_('Loan extended');
+      hideAllActionPanels_();
     }
   } catch (err) {
     showToast_(err.message);
@@ -396,11 +417,13 @@ async function refreshLoanDetail_(loanId) {
   try {
     const resp = await callApi('getLoanLedger', { loanId });
     if (!resp.ok) throw new Error(resp.error || 'Failed loading ledger');
+    state.selectedLoanDetail = resp.data;
     renderLoanDetail_(resp.data);
     await cacheSet(`loan_${loanId}`, resp.data);
   } catch (err) {
     const cached = await cacheGet(`loan_${loanId}`);
     if (cached) {
+      state.selectedLoanDetail = cached;
       renderLoanDetail_(cached);
       return;
     }
@@ -478,8 +501,11 @@ function renderLoans_() {
     .map((loan) => {
       const client = state.clients.find((c) => c.ClientID === loan.ClientID);
       const clientName = client ? client.Name : loan.ClientID;
+      const selectedClass = state.selectedLoanId === loan.LoanID ? 'selected-loan' : '';
+      const selectedMarker = state.selectedLoanId === loan.LoanID ? '<span class="selected-label">Selected</span><br />' : '';
       return `
-        <article class="list-item clickable" data-loan-id="${escapeHtml_(loan.LoanID)}">
+        <article class="list-item clickable ${selectedClass}" data-loan-id="${escapeHtml_(loan.LoanID)}">
+          ${selectedMarker}
           <strong>${escapeHtml_(clientName)}</strong><br />
           <span class="muted">${formatCents_(loan.OutstandingCents)} • Due ${escapeHtml_(formatDate_(loan.DueDate))}</span><br />
           <span class="status-pill ${statusClass_(loan.Status)}">${escapeHtml_(loan.Status || 'UNKNOWN')}</span>
@@ -505,7 +531,7 @@ function renderLoanDetail_(payload) {
   const header = `
     <div class="list-item">
       <strong>${escapeHtml_(client ? client.Name : loan.ClientID)}</strong><br />
-      <span class="muted">LoanID: ${escapeHtml_(loan.LoanID)}</span><br />
+      <span class="muted">Issue Date: ${escapeHtml_(formatDate_(loan.DateIssued))}</span><br />
       <span class="muted">Outstanding: ${formatCents_(payload.outstandingCents)} • Due ${escapeHtml_(formatDate_(loan.DueDate))}</span><br />
       <span class="status-pill ${statusClass_(payload.status)}">${escapeHtml_(payload.status)}</span>
     </div>
@@ -523,10 +549,112 @@ function renderLoanDetail_(payload) {
     .join('');
 
   el.loanDetail.innerHTML = header + rows;
-  el.paymentForm.classList.remove('hidden');
-  el.waiverForm.classList.remove('hidden');
-  el.adjustForm.classList.remove('hidden');
-  el.extendForm.classList.remove('hidden');
+  renderLoanSummaryCard_(payload, client);
+  setWaiverAmountFromLoan_(loan);
+  renderLoans_();
+}
+
+function renderLoanSummaryCard_(payload, client) {
+  const loan = payload.loan || {};
+  const txs = payload.transactions || [];
+  const principalCents = Number(loan.PrincipalCents) || 0;
+  const interestPct = Number(loan.InterestRateUsedPct) || 0;
+  const interestCents = Number(loan.BaseInterestCents) || 0;
+  const feeCents = Number(loan.DisbursementFeeCents) || 0;
+  const penaltyCents = txs
+    .filter((tx) => tx.Type === 'Penalty')
+    .reduce((sum, tx) => sum + (Number(tx.AmountCents) || 0), 0);
+  const clientName = client ? client.Name : loan.ClientID || '-';
+
+  el.loanSummaryCard.innerHTML = `
+    <h4 class="summary-title">Loan Confirmation</h4>
+    <p class="summary-subtitle">Share this snapshot with the client</p>
+    <div class="summary-keyline">
+      <p><strong>Client</strong><span>${escapeHtml_(clientName)}</span></p>
+      <p><strong>Loan ID</strong><span>${escapeHtml_(loan.LoanID || '-')}</span></p>
+    </div>
+    <div class="summary-grid">
+      <p><strong>Principal</strong><span>${formatCents_(principalCents)}</span></p>
+      <p><strong>Interest %</strong><span>${escapeHtml_(interestPct.toFixed(2))}%</span></p>
+      <p><strong>Interest Amount</strong><span>${formatCents_(interestCents)}</span></p>
+      <p><strong>Fees</strong><span>${formatCents_(feeCents)}</span></p>
+      <p><strong>Late Fees (Penalties)</strong><span>${formatCents_(penaltyCents)}</span></p>
+      <p><strong>Total Due</strong><span>${formatCents_(payload.outstandingCents)}</span></p>
+      <p><strong>Date Issued</strong><span>${escapeHtml_(formatDate_(loan.DateIssued))}</span></p>
+      <p><strong>Due Date</strong><span>${escapeHtml_(formatDate_(loan.DueDate))}</span></p>
+    </div>
+    <p class="summary-footnote">Generated ${escapeHtml_(formatDate_(new Date().toISOString()))}</p>
+  `;
+  el.loanSummaryCard.classList.remove('hidden');
+}
+
+function setWaiverAmountFromLoan_(loan) {
+  if (!el.waiverAmount || !loan) return;
+  const amount = ((Number(loan.BaseInterestCents) || 0) / 100).toFixed(2);
+  el.waiverAmount.value = amount;
+}
+
+function onToggleActionPanel_(panelName) {
+  if (panelName !== 'createLoan' && !state.selectedLoanId) {
+    showToast_('Select a loan first');
+    return;
+  }
+
+  hideAllActionPanels_();
+
+  if (panelName === 'createLoan') {
+    el.createLoanPanel.classList.remove('hidden');
+    return;
+  }
+  if (panelName === 'recordPayment') {
+    el.paymentForm.classList.remove('hidden');
+    return;
+  }
+  if (panelName === 'waiveInterest') {
+    const loan = state.selectedLoanDetail ? state.selectedLoanDetail.loan : null;
+    if (loan) setWaiverAmountFromLoan_(loan);
+    el.waiverForm.classList.remove('hidden');
+    return;
+  }
+  if (panelName === 'adjustment') {
+    el.adjustForm.classList.remove('hidden');
+    return;
+  }
+  if (panelName === 'extendLoan') {
+    el.extendForm.classList.remove('hidden');
+  }
+}
+
+function hideAllActionPanels_() {
+  el.createLoanPanel.classList.add('hidden');
+  el.paymentForm.classList.add('hidden');
+  el.waiverForm.classList.add('hidden');
+  el.adjustForm.classList.add('hidden');
+  el.extendForm.classList.add('hidden');
+}
+
+function initDateInputs_() {
+  document.querySelectorAll('.date-input').forEach((input) => {
+    input.addEventListener('focus', () => {
+      if (input.type !== 'date') input.type = 'date';
+      if (!input.value && typeof input.showPicker === 'function') {
+        try {
+          input.showPicker();
+        } catch (err) {
+          // Ignore unsupported showPicker errors.
+        }
+      }
+    });
+    input.addEventListener('blur', () => {
+      if (!input.value) input.type = 'text';
+    });
+  });
+}
+
+function resetDateInputsIn_(container) {
+  container.querySelectorAll('.date-input').forEach((input) => {
+    if (!input.value) input.type = 'text';
+  });
 }
 
 function renderReport_() {
